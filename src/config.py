@@ -14,6 +14,11 @@ DEFAULT_CONFIG = {
     "screenshot_interval": 0.5,  # seconds between captures (3 shots in 1 second = 0.5s interval)
     "image_quality": 85,
     "max_response_tokens": 300,
+    # Speech settings
+    "speech_enabled": True,
+    "continuous_listening": False,
+    "speech_timeout": 3.0,  # seconds to wait for speech to start
+    "speech_phrase_limit": 5.0,  # max seconds of speech to capture
 }
 
 

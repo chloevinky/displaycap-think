@@ -3,3 +3,5 @@ mss>=9.0.0
 keyboard>=0.13.5
 Pillow>=10.0.0
 screeninfo>=0.8.1
+SpeechRecognition>=3.10.0
+PyAudio>=0.2.14
