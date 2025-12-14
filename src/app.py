@@ -179,8 +179,8 @@ class DisplayCapApp:
         self._root = tk.Tk()
         self._root.withdraw()  # Hide the main window
 
-        # Create response window
-        self.response_window = ResponseWindow()
+        # Create response window with parent
+        self.response_window = ResponseWindow(self._root)
 
         # Start hotkey listener
         self.hotkey_manager.start(self._on_hotkey)

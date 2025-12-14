@@ -50,7 +50,7 @@ class HotkeyManager:
         keyboard.add_hotkey(
             self._hotkey,
             self._on_hotkey_pressed,
-            suppress=False  # Don't suppress the key event
+            suppress=True  # Suppress the key event to prevent it from reaching other apps
         )
 
     def _on_hotkey_pressed(self):
