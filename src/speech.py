@@ -1,11 +1,69 @@
 """
 Speech recognition module - captures and transcribes user speech.
+Uses sounddevice for audio capture (easier to install than PyAudio on Windows).
 """
 
+import io
+import wave
 import speech_recognition as sr
 from typing import Optional, Tuple
 import threading
 import queue
+import numpy as np
+import sounddevice as sd
+
+
+class SoundDeviceMicrophone:
+    """Custom audio source using sounddevice instead of PyAudio."""
+
+    def __init__(self, sample_rate: int = 16000, channels: int = 1):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.SAMPLE_WIDTH = 2  # 16-bit audio
+        self.SAMPLE_RATE = sample_rate
+        self.CHUNK = 1024
+        self._audio_data = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def record(self, duration: float) -> bytes:
+        """Record audio for specified duration."""
+        frames = int(duration * self.sample_rate)
+        recording = sd.rec(
+            frames,
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype=np.int16,
+            blocking=True
+        )
+        return recording.tobytes()
+
+
+def record_audio_to_wav(duration: float, sample_rate: int = 16000) -> bytes:
+    """Record audio and return as WAV file bytes."""
+    frames = int(duration * sample_rate)
+    recording = sd.rec(
+        frames,
+        samplerate=sample_rate,
+        channels=1,
+        dtype=np.int16,
+        blocking=True
+    )
+
+    # Convert to WAV format in memory
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(recording.tobytes())
+
+    buffer.seek(0)
+    return buffer.read()
 
 
 class SpeechCapture:
@@ -15,24 +73,11 @@ class SpeechCapture:
         self.recognizer = sr.Recognizer()
         self._is_listening = False
         self._result_queue: queue.Queue = queue.Queue()
+        self.sample_rate = 16000
 
-        # Adjust for ambient noise sensitivity
+        # Adjust recognition settings
         self.recognizer.energy_threshold = 300
-        self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 0.8  # Seconds of silence before phrase is complete
-
-    def calibrate(self, duration: float = 1.0):
-        """
-        Calibrate for ambient noise levels.
-
-        Args:
-            duration: Seconds to listen for ambient noise
-        """
-        try:
-            with sr.Microphone() as source:
-                self.recognizer.adjust_for_ambient_noise(source, duration=duration)
-        except OSError:
-            pass  # No microphone available
+        self.recognizer.dynamic_energy_threshold = False  # Disable for sounddevice
 
     def capture_speech(
         self,
@@ -43,37 +88,32 @@ class SpeechCapture:
         Listen for speech and transcribe it.
 
         Args:
-            timeout: Max seconds to wait for speech to start
+            timeout: Max seconds to wait for speech to start (used as initial record time)
             phrase_time_limit: Max seconds of speech to capture
 
         Returns:
             Tuple of (transcribed_text, error_message)
         """
         try:
-            with sr.Microphone() as source:
-                # Quick ambient noise adjustment
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.3)
+            # Record audio for the combined duration
+            total_duration = min(timeout + phrase_time_limit, 8.0)  # Cap at 8 seconds
+            wav_data = record_audio_to_wav(total_duration, self.sample_rate)
 
-                # Listen for speech
-                try:
-                    audio = self.recognizer.listen(
-                        source,
-                        timeout=timeout,
-                        phrase_time_limit=phrase_time_limit
-                    )
-                except sr.WaitTimeoutError:
-                    return None, None  # No speech detected, not an error
+            # Convert to AudioData for speech_recognition
+            audio = sr.AudioData(wav_data, self.sample_rate, 2)
 
-                # Transcribe using Google's free speech recognition
-                try:
-                    text = self.recognizer.recognize_google(audio)
-                    return text, None
-                except sr.UnknownValueError:
-                    return None, None  # Speech was unintelligible
-                except sr.RequestError as e:
-                    return None, f"Speech service error: {e}"
+            # Transcribe using Google's free speech recognition
+            try:
+                text = self.recognizer.recognize_google(audio)
+                return text, None
+            except sr.UnknownValueError:
+                return None, None  # Speech was unintelligible or no speech
+            except sr.RequestError as e:
+                return None, f"Speech service error: {e}"
 
-        except OSError as e:
+        except sd.PortAudioError as e:
+            return None, f"Audio device error: {e}"
+        except Exception as e:
             return None, f"Microphone error: {e}"
 
     def capture_speech_async(
@@ -129,11 +169,7 @@ class ContinuousListener:
         self._recent_text: list = []
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-
-        # Settings for background listening
-        self.recognizer.energy_threshold = 300
-        self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 1.0
+        self.sample_rate = 16000
 
     def start(self):
         """Start continuous background listening."""
@@ -149,34 +185,31 @@ class ContinuousListener:
     def _listen_loop(self):
         """Main listening loop."""
         try:
-            with sr.Microphone() as source:
-                self.recognizer.adjust_for_ambient_noise(source, duration=1.0)
+            while not self._stop_event.is_set():
+                try:
+                    # Record in 3-second chunks
+                    wav_data = record_audio_to_wav(3.0, self.sample_rate)
+                    audio = sr.AudioData(wav_data, self.sample_rate, 2)
 
-                while not self._stop_event.is_set():
+                    # Transcribe
                     try:
-                        audio = self.recognizer.listen(
-                            source,
-                            timeout=2.0,
-                            phrase_time_limit=5.0
-                        )
+                        text = self.recognizer.recognize_google(audio)
+                        if text:
+                            with self._lock:
+                                self._recent_text.append(text)
+                                # Keep only recent entries
+                                if len(self._recent_text) > 5:
+                                    self._recent_text.pop(0)
+                    except (sr.UnknownValueError, sr.RequestError):
+                        pass
 
-                        # Transcribe in background
-                        try:
-                            text = self.recognizer.recognize_google(audio)
-                            if text:
-                                with self._lock:
-                                    self._recent_text.append(text)
-                                    # Keep only recent entries
-                                    if len(self._recent_text) > 5:
-                                        self._recent_text.pop(0)
-                        except (sr.UnknownValueError, sr.RequestError):
-                            pass
-
-                    except sr.WaitTimeoutError:
+                except Exception:
+                    # Brief pause on error before retrying
+                    if not self._stop_event.wait(1.0):
                         continue
 
-        except OSError:
-            pass  # Microphone not available
+        except Exception:
+            pass  # Exit gracefully
 
         self._is_running = False
 

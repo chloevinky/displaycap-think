@@ -138,8 +138,7 @@ python run.py --speech-timeout 5.0
 
 **Speech not working**
 - Ensure your microphone is connected and working
-- On Windows, you may need to install PyAudio: `pip install pyaudio`
-- If PyAudio fails to install, download the wheel from https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio
+- Check Windows privacy settings: Settings > Privacy > Microphone
 - Run with `--no-speech` to disable voice input entirely
 
 **"Speech service error"**
