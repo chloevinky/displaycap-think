@@ -1,22 +1,34 @@
-# DisplayCap Think
+# LoL Assistant
 
-An AI-powered screenshot assistant for Windows that provides quick help for whatever you're working on.
+An AI-powered League of Legends coaching assistant that provides real-time advice during your games.
 
 ## Features
 
-- **Hotkey Triggered**: Press `Ctrl+Shift+Space` to activate
-- **Smart Capture**: Takes 3 screenshots over 1 second to capture context
-- **Voice Input**: Automatically captures your spoken question for better context
-- **AI Analysis**: Uses Claude Haiku to understand your current task
-- **Quick Assistance**: Provides short, actionable help displayed on your secondary monitor
-- **Non-Intrusive**: Response window appears on secondary monitor, never captured in screenshots
+- **Live Game Tracking**: Automatically captures your game window every 2 seconds
+- **Smart Context**: Tracks enemy champions, items, and game state over time
+- **Contextual Advice**: Press a hotkey to get AI-powered advice tailored to your current situation
+- **Item Recommendations**: Get optimal item suggestions based on enemy team composition
+- **Voice Input**: Speak your question for more specific advice
+- **Game Data Integration**: Uses Riot's Data Dragon API for current patch information
+- **LoL-Themed UI**: Dark theme matching the League of Legends client aesthetic
+
+## How It Works
+
+1. **Continuous Monitoring**: The app captures your game window every 2 seconds in the background
+2. **State Tracking**: Periodically analyzes screenshots to track:
+   - Your champion
+   - Enemy champions visible
+   - Game phase (early/mid/late)
+   - Whether you're in the shop
+3. **Instant Advice**: When you press the hotkey, the app uses the accumulated context to provide relevant advice
+4. **Smart Recommendations**: If you're in the shop, it focuses on item recommendations based on enemy team
 
 ## Requirements
 
 - Windows 10/11
 - Python 3.8+
 - Anthropic API key
-- Microphone (for voice input - optional but recommended)
+- Microphone (optional, for voice input)
 
 ## Installation
 
@@ -46,49 +58,64 @@ An AI-powered screenshot assistant for Windows that provides quick help for what
    python run.py
    ```
 
-2. Press `Ctrl+Shift+Space` while working on any task
+2. Launch League of Legends and start a game
 
-3. **Speak your question** (optional but recommended):
-   - After pressing the hotkey, speak your question or describe what you need help with
-   - The app listens for up to 3 seconds
-   - Example: "How do I fix this error?" or "What does this function do?"
+3. Press `Ctrl+Shift+Space` when you need advice:
+   - In lane: Get tips on trading, wave management, or roaming
+   - In shop: Get item recommendations based on enemy team
+   - In teamfight: Get positioning and ability usage tips
 
-4. The app will:
-   - Capture 3 screenshots of your primary monitor
-   - Transcribe your spoken question (if any)
-   - Send both to Claude for analysis
-   - Display helpful assistance on your secondary monitor
+4. **Speak your question** (optional):
+   - After pressing the hotkey, speak your specific question
+   - Example: "What should I buy against their AP?"
+   - Example: "Should I fight or farm?"
 
-5. Press `Escape` or click X to dismiss the response window
+5. Press `Escape` to dismiss the advice window
 
-6. Press `Ctrl+C` in the terminal to exit the app
+6. Press `Ctrl+C` in the terminal to exit
 
-## Configuration
+## Command Line Options
 
-### Change Hotkey
-
+### Basic Configuration
 ```bash
+# Set API key
+python run.py --set-key YOUR_API_KEY
+
+# Change hotkey
 python run.py --hotkey "f12"
-python run.py --hotkey "ctrl+alt+h"
+python run.py --hotkey "ctrl+alt+a"
+```
+
+### Auto-Capture Settings
+```bash
+# Disable automatic screenshot capture
+python run.py --no-auto-capture
+
+# Change capture interval (default: 2.0 seconds)
+python run.py --capture-interval 3.0
+
+# Disable the status overlay
+python run.py --no-overlay
 ```
 
 ### Speech Options
-
 ```bash
 # Disable speech capture
 python run.py --no-speech
 
-# Enable continuous background listening (captures what you said before hotkey)
+# Enable continuous background listening
 python run.py --continuous-listen
 
-# Set speech timeout (seconds to wait for speech)
+# Set speech timeout
 python run.py --speech-timeout 5.0
 ```
 
+## Configuration
+
 ### Config File Location
 
-- Windows: `%APPDATA%\displaycap-think\config.json`
-- Linux/Mac: `~/.config/displaycap-think/config.json`
+- Windows: `%APPDATA%\lol-assistant\config.json`
+- Linux/Mac: `~/.config/lol-assistant/config.json`
 
 ### Available Settings
 
@@ -98,52 +125,120 @@ python run.py --speech-timeout 5.0
     "screenshot_count": 3,
     "screenshot_interval": 0.5,
     "image_quality": 85,
-    "max_response_tokens": 300,
+    "auto_capture_enabled": true,
+    "auto_capture_interval": 2.0,
+    "max_response_tokens": 400,
     "speech_enabled": true,
     "continuous_listening": false,
     "speech_timeout": 3.0,
-    "speech_phrase_limit": 5.0
+    "speech_phrase_limit": 5.0,
+    "auto_detect_lol_window": true,
+    "background_analysis_enabled": true,
+    "background_analysis_interval": 10,
+    "game_state_history_size": 60,
+    "show_game_status": true
 }
 ```
 
-## How It Works
+### Settings Explained
 
-1. **Screenshot Capture**: Uses `mss` library to capture the primary monitor
-2. **Rapid Sequence**: Takes multiple shots to capture changing content/context
-3. **Voice Capture**: Simultaneously listens for your spoken question (using Google Speech Recognition)
-4. **Image Processing**: Compresses and encodes images for efficient API transfer
-5. **AI Analysis**: Claude Haiku analyzes both screenshots and your question
-6. **Quick Response**: Provides brief, actionable assistance (2-4 sentences)
-7. **Smart Display**: Shows response on secondary monitor to avoid capture loops
+| Setting | Description |
+|---------|-------------|
+| `auto_capture_enabled` | Enable/disable automatic background capture |
+| `auto_capture_interval` | Seconds between auto-captures (default: 2.0) |
+| `auto_detect_lol_window` | Try to capture LoL window specifically |
+| `background_analysis_enabled` | Analyze screenshots to extract game state |
+| `background_analysis_interval` | Run analysis every N captures |
+| `game_state_history_size` | Number of screenshots to keep in memory |
+| `show_game_status` | Show the tracking overlay in corner |
+
+## Advice Types
+
+The assistant provides different types of advice based on context:
+
+### In-Game Advice
+- Lane trading strategies
+- Wave management tips
+- Roaming suggestions
+- Objective timing
+- Teamfight positioning
+
+### Item Recommendations
+When you're in the shop, the assistant focuses on item builds:
+- Counter-build against enemy team composition
+- Synergy with your champion's kit
+- Power spike items for current game phase
+- Gold-efficient purchases
+
+### Strategic Tips
+- Map awareness reminders
+- Objective priorities
+- Win condition guidance
+
+## Architecture
+
+```
+src/
+├── app.py           # Main application & orchestration
+├── api_client.py    # Anthropic API integration
+├── config.py        # Configuration management
+├── display.py       # UI windows (LoL-themed)
+├── game_state.py    # Game state tracking
+├── hotkey.py        # Global hotkey handling
+├── lol_api.py       # Data Dragon & LCU API clients
+├── screenshot.py    # Screen capture & auto-capture
+└── speech.py        # Voice input handling
+```
+
+## Data Sources
+
+### Data Dragon API
+- Champion information (names, roles, stats)
+- Item data (names, costs, stats)
+- Current game patch version
+
+### LCU API (when available)
+- Live game detection
+- Current game mode
+- Champion select information
 
 ## Privacy
 
-- Screenshots are sent directly to the Anthropic API
-- Voice is transcribed using Google Speech Recognition (sent to Google servers)
-- No screenshots or audio are stored locally
-- No data is logged or retained by this application
+- Screenshots are sent to Anthropic's API for analysis
+- Voice is transcribed using Google Speech Recognition
+- Game data is cached locally in the config directory
+- No screenshots or audio are permanently stored
+- No data is sent to third parties beyond Anthropic (AI) and Google (speech)
 
 ## Troubleshooting
 
-**"No API key found"**
-- Set the `ANTHROPIC_API_KEY` environment variable or use `--set-key`
+### "No API key found"
+Set the `ANTHROPIC_API_KEY` environment variable or use `--set-key`
 
-**Hotkey not working**
-- Try running as administrator (required for global hotkeys on some systems)
+### LoL window not detected
+- Make sure League of Legends is running
+- The app will capture the primary monitor as fallback
+- Check that the game is not minimized
+
+### Hotkey not working
+- Try running as administrator (required for global hotkeys)
 - Check if another application is using the same hotkey
+- Try a different hotkey with `--hotkey`
 
-**Window not appearing on secondary monitor**
-- Ensure your secondary monitor is detected by Windows
-- The app will fallback to the primary monitor if no secondary is found
+### Advice window not appearing
+- Check if it's on your secondary monitor
+- Press the hotkey again to show it
+- Disable secondary monitor positioning by modifying display.py
 
-**Speech not working**
+### Speech not working
 - Ensure your microphone is connected and working
 - Check Windows privacy settings: Settings > Privacy > Microphone
-- Run with `--no-speech` to disable voice input entirely
+- Run with `--no-speech` to disable voice input
 
-**"Speech service error"**
-- This uses Google's free speech recognition API which requires internet
-- Check your internet connection
+### High CPU usage
+- Increase `auto_capture_interval` to capture less frequently
+- Disable background analysis with `background_analysis_enabled: false`
+- Use `--no-auto-capture` to disable auto-capture entirely
 
 ## License
 
