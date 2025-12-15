@@ -21,7 +21,7 @@ from .screenshot import (
     image_to_base64,
     AutoCaptureManager
 )
-from .api_client import create_client, analyze_screenshots, analyze_for_state_tracking
+from .api_client import create_client, analyze_screenshots, analyze_for_state_tracking, detect_latest_haiku_model
 from .display import ResponseWindow, GameStatusOverlay, COLORS
 from .hotkey import HotkeyManager
 from .config import load_config, get_api_key
@@ -76,13 +76,17 @@ class LoLAssistantApp:
 
         # Create API client
         try:
+            print("[INIT] Creating Anthropic API client...")
             self.client = create_client(self.api_key)
         except Exception as e:
-            print(f"Error creating API client: {e}")
+            print(f"[ERROR] Failed to create API client: {e}")
             return False
 
+        # Detect latest haiku model
+        detect_latest_haiku_model(self.client)
+
         # Initialize LoL data (Data Dragon API)
-        print("\nInitializing LoL Assistant...")
+        print("[INIT] Initializing LoL Assistant...")
         self.lol_data.initialize()
 
         # Set up hotkey
@@ -91,26 +95,33 @@ class LoLAssistantApp:
         # Initialize speech capture if enabled
         if self.speech_enabled:
             try:
+                print("[VOICE] Initializing speech capture...")
                 self.speech_capture = SpeechCapture()
-                print("Speech capture enabled - speak after pressing hotkey")
+                print("[VOICE] Speech capture enabled - speak after pressing hotkey")
 
                 # Start continuous listening if configured
                 if self.use_continuous_listening:
+                    print("[VOICE] Starting continuous listening...")
                     self.continuous_listener = ContinuousListener()
                     self.continuous_listener.start()
-                    print("Continuous listening active")
+                    print("[VOICE] Continuous listening active")
             except Exception as e:
-                print(f"Warning: Speech capture unavailable: {e}")
+                print(f"[VOICE] Warning: Speech capture unavailable: {e}")
                 self.speech_enabled = False
+        else:
+            print("[VOICE] Voice input disabled")
 
         # Initialize auto-capture
         if self.config.get("auto_capture_enabled", True):
             interval = self.config.get("auto_capture_interval", 2.0)
+            print(f"[CAPTURE] Initializing auto-capture (interval: {interval}s)...")
             self.auto_capture = AutoCaptureManager(
                 interval=interval,
                 callback=self._on_auto_capture,
                 auto_detect_lol=self.config.get("auto_detect_lol_window", True)
             )
+        else:
+            print("[CAPTURE] Auto-capture disabled")
 
         return True
 
@@ -122,6 +133,11 @@ class LoLAssistantApp:
         """
         self._capture_count += 1
         self._last_lol_detected = is_lol_window
+
+        # Print periodic capture status (every 10 captures to avoid spam)
+        if self._capture_count % 10 == 0:
+            lol_status = "LoL detected" if is_lol_window else "monitoring"
+            print(f"[CAPTURE] #{self._capture_count} ({lol_status})")
 
         # Convert to base64 for storage
         quality = self.config.get("image_quality", 85)
@@ -154,11 +170,13 @@ class LoLAssistantApp:
     def _run_background_analysis(self, img_base64: str):
         """Run background analysis on a screenshot to extract game state."""
         try:
+            print("[ANALYZE] Running background state analysis...")
             state = analyze_for_state_tracking(self.client, img_base64)
 
             # Update game state tracker with extracted info
             if state.get("my_champion"):
                 self.game_state.my_champion = state["my_champion"]
+                print(f"[ANALYZE] Detected champion: {state['my_champion']}")
 
             for enemy in state.get("visible_enemies", []):
                 self.game_state.update_enemy_champion(enemy)
@@ -175,8 +193,10 @@ class LoLAssistantApp:
                 recent[0].shop_open = state.get("shop_open", False)
                 recent[0].game_phase = state.get("game_phase")
 
+            print(f"[ANALYZE] State: screen={state.get('screen')}, phase={state.get('game_phase')}, shop={state.get('shop_open')}")
+
         except Exception as e:
-            print(f"Background analysis error: {e}")
+            print(f"[ANALYZE] Error: {e}")
 
     def _update_overlay(self):
         """Update the status overlay UI."""
@@ -196,30 +216,39 @@ class LoLAssistantApp:
         speech_text = None
 
         try:
+            print("[HOTKEY] Processing hotkey request...")
+
             # Check for continuous listening buffer first
             if self.continuous_listener and self.continuous_listener.is_running():
                 speech_text = self.continuous_listener.get_recent_speech(clear=True)
+                if speech_text:
+                    print(f"[VOICE] Got buffered speech: \"{speech_text}\"")
 
             # Show status on main thread
             status_msg = "Analyzing game..." if not self.speech_enabled else "Analyzing... (listening)"
             self._root.after(0, lambda: self._show_status(status_msg))
 
             # Get recent screenshots from game state tracker (already captured)
+            print("[CAPTURE] Retrieving recent screenshots...")
             recent_images = self.game_state.get_recent_images_base64(count=3)
 
             # If we don't have recent captures, capture now
             if not recent_images:
+                print("[CAPTURE] No cached images, capturing now...")
                 count = self.config.get("screenshot_count", 3)
                 interval = self.config.get("screenshot_interval", 0.5)
                 screenshots, _ = capture_lol_sequence(count=count, interval=interval)
                 quality = self.config.get("image_quality", 85)
                 recent_images = screenshots_to_base64(screenshots, quality=quality)
+            else:
+                print(f"[CAPTURE] Using {len(recent_images)} cached screenshots")
 
             # Capture speech in parallel if enabled and no continuous buffer
             speech_timeout = self.config.get("speech_timeout", 3.0)
             speech_phrase_limit = self.config.get("speech_phrase_limit", 5.0)
 
             if self.speech_enabled and self.speech_capture and not speech_text:
+                print(f"[VOICE] Listening for speech (timeout: {speech_timeout}s)...")
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     speech_future = executor.submit(
                         self.speech_capture.capture_speech,
@@ -229,8 +258,11 @@ class LoLAssistantApp:
                     captured_text, speech_error = speech_future.result()
                     if captured_text:
                         speech_text = captured_text
+                        print(f"[VOICE] Captured: \"{speech_text}\"")
+                    else:
+                        print("[VOICE] No speech detected")
                     if speech_error:
-                        print(f"Speech warning: {speech_error}")
+                        print(f"[VOICE] Warning: {speech_error}")
 
             # Update status
             self._root.after(0, lambda: self._update_status("Getting advice..."))
@@ -247,21 +279,25 @@ class LoLAssistantApp:
                 game_context += f"\n\n{self.game_state.get_item_recommendation_context()}"
 
             # Send to API for analysis
+            print("[API] Sending request to Claude...")
             response = analyze_screenshots(
                 self.client,
                 recent_images,
                 user_context=speech_text,
                 game_context=game_context
             )
+            print("[API] Response received")
 
             # Show response (include speech indicator if we captured speech)
             if speech_text:
                 response = f'[Question: "{speech_text}"]\n\n{response}'
 
             self._root.after(0, lambda: self._show_response(response))
+            print("[DONE] Analysis complete")
 
         except Exception as e:
             error_msg = f"Error: {str(e)}"
+            print(f"[ERROR] {error_msg}")
             self._root.after(0, lambda: self._show_response(error_msg))
 
         finally:
@@ -312,20 +348,26 @@ class LoLAssistantApp:
 
         # Start auto-capture
         if self.auto_capture:
+            print("[START] Starting auto-capture...")
             self.auto_capture.start()
             self.game_state.start_new_game()  # Start fresh game state
 
         # Start hotkey listener
+        print("[START] Starting hotkey listener...")
         self.hotkey_manager.start(self._on_hotkey)
 
         hotkey = self.hotkey_manager.get_hotkey()
-        print(f"\nLoL Assistant is running!")
-        print(f"Press {hotkey.upper()} to get game advice")
-        if self.speech_enabled:
-            print("Speak your question after pressing the hotkey for specific advice")
+        print("")
+        print("=" * 50)
+        print("  LoL Assistant is running!")
+        print("=" * 50)
+        print(f"  Hotkey: {hotkey.upper()}")
+        print(f"  Voice input: {'ENABLED' if self.speech_enabled else 'DISABLED'}")
         if self.auto_capture:
-            print(f"Auto-capturing every {self.auto_capture.interval}s")
-        print("Press Ctrl+C to exit")
+            print(f"  Auto-capture: every {self.auto_capture.interval}s")
+        print("  Press Ctrl+C to exit")
+        print("=" * 50)
+        print("")
 
         # Run the tkinter main loop
         try:
@@ -337,16 +379,19 @@ class LoLAssistantApp:
 
     def shutdown(self):
         """Clean up and shut down the application."""
-        print("\nShutting down...")
+        print("\n[SHUTDOWN] Shutting down LoL Assistant...")
 
         # Stop auto-capture
         if self.auto_capture:
+            print("[SHUTDOWN] Stopping auto-capture...")
             self.auto_capture.stop()
 
+        print("[SHUTDOWN] Stopping hotkey listener...")
         self.hotkey_manager.stop()
 
         # Stop continuous listener if running
         if self.continuous_listener:
+            print("[SHUTDOWN] Stopping continuous listener...")
             self.continuous_listener.stop()
 
         if self.status_overlay:
@@ -361,6 +406,8 @@ class LoLAssistantApp:
                 self._root.destroy()
             except tk.TclError:
                 pass
+
+        print("[SHUTDOWN] Complete. Goodbye!")
 
 
 def main():
@@ -383,18 +430,18 @@ def main():
     parser.add_argument(
         "--no-speech",
         action="store_true",
-        help="Disable speech capture"
+        help="Disable voice input (skip waiting for speech after hotkey)"
     )
     parser.add_argument(
         "--continuous-listen",
         action="store_true",
-        help="Enable continuous background listening"
+        help="Enable continuous background listening (buffers recent speech)"
     )
     parser.add_argument(
         "--speech-timeout",
         type=float,
         metavar="SECONDS",
-        help="Max seconds to wait for speech (default: 3.0)"
+        help="Max seconds to wait for speech to start (default: 3.0)"
     )
     parser.add_argument(
         "--no-auto-capture",

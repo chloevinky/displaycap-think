@@ -9,8 +9,64 @@ from typing import List, Optional
 import anthropic
 
 
-# Claude 4.5 Haiku model ID - fast responses for real-time assistance
-MODEL_ID = "claude-haiku-4-5-20241022"
+# Default fallback model ID if auto-detection fails
+DEFAULT_MODEL_ID = "claude-haiku-4-5-20241022"
+
+# Will be set by detect_latest_haiku_model()
+_current_model_id: Optional[str] = None
+
+
+def detect_latest_haiku_model(client: anthropic.Anthropic) -> str:
+    """
+    Detect the most recent Claude Haiku model using the Anthropic API.
+
+    Args:
+        client: Anthropic API client
+
+    Returns:
+        The model ID of the most recent haiku model
+    """
+    global _current_model_id
+
+    try:
+        print("[API] Fetching available models from Anthropic...")
+        models_response = client.models.list(limit=100)
+
+        # Filter for haiku models
+        haiku_models = []
+        for model in models_response.data:
+            model_id = model.id.lower()
+            if "haiku" in model_id:
+                haiku_models.append(model)
+
+        if not haiku_models:
+            print(f"[API] No haiku models found, using default: {DEFAULT_MODEL_ID}")
+            _current_model_id = DEFAULT_MODEL_ID
+            return DEFAULT_MODEL_ID
+
+        # Sort by created_at timestamp (most recent first)
+        # Models have a created_at attribute
+        haiku_models.sort(key=lambda m: m.created_at if hasattr(m, 'created_at') and m.created_at else "", reverse=True)
+
+        latest_model = haiku_models[0].id
+        _current_model_id = latest_model
+        print(f"[API] Detected latest haiku model: {latest_model}")
+
+        if len(haiku_models) > 1:
+            print(f"[API] Available haiku models: {', '.join(m.id for m in haiku_models[:5])}")
+
+        return latest_model
+
+    except Exception as e:
+        print(f"[API] Error detecting haiku model: {e}")
+        print(f"[API] Using default model: {DEFAULT_MODEL_ID}")
+        _current_model_id = DEFAULT_MODEL_ID
+        return DEFAULT_MODEL_ID
+
+
+def get_current_model() -> str:
+    """Get the currently configured model ID."""
+    return _current_model_id or DEFAULT_MODEL_ID
 
 # System prompt focused on League of Legends assistance
 SYSTEM_PROMPT = """You are an expert League of Legends coach and assistant. You analyze screenshots of ongoing LoL games and provide strategic advice.
@@ -126,8 +182,9 @@ def analyze_screenshots(
     })
 
     # Make the API call
+    print(f"[API] Sending analysis request ({len(screenshots_base64)} screenshots)...")
     message = client.messages.create(
-        model=MODEL_ID,
+        model=get_current_model(),
         max_tokens=400,  # Slightly longer for detailed item recommendations
         system=SYSTEM_PROMPT,
         messages=[
@@ -180,7 +237,7 @@ def analyze_for_state_tracking(
     ]
 
     message = client.messages.create(
-        model=MODEL_ID,
+        model=get_current_model(),
         max_tokens=200,  # Short response for state extraction
         system=BACKGROUND_ANALYSIS_PROMPT,
         messages=[
@@ -312,8 +369,9 @@ def get_item_recommendation(
         "text": "\n".join(prompt_parts)
     })
 
+    print("[API] Requesting item recommendations...")
     message = client.messages.create(
-        model=MODEL_ID,
+        model=get_current_model(),
         max_tokens=300,
         system=SYSTEM_PROMPT,
         messages=[
