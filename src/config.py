@@ -1,5 +1,5 @@
 """
-Configuration management for DisplayCap Think.
+Configuration management for LoL Assistant.
 """
 
 import os
@@ -9,16 +9,35 @@ from typing import Optional
 
 
 DEFAULT_CONFIG = {
+    # Hotkey settings
     "hotkey": "ctrl+shift+space",
+
+    # Screenshot settings
     "screenshot_count": 3,
     "screenshot_interval": 0.5,  # seconds between captures (3 shots in 1 second = 0.5s interval)
     "image_quality": 85,
-    "max_response_tokens": 300,
+
+    # Auto-capture settings (for live game tracking)
+    "auto_capture_enabled": True,
+    "auto_capture_interval": 2.0,  # seconds between automatic captures
+
+    # API settings
+    "max_response_tokens": 400,
+
     # Speech settings
     "speech_enabled": True,
     "continuous_listening": False,
     "speech_timeout": 3.0,  # seconds to wait for speech to start
     "speech_phrase_limit": 5.0,  # max seconds of speech to capture
+
+    # LoL-specific settings
+    "auto_detect_lol_window": True,  # Try to capture LoL window specifically
+    "background_analysis_enabled": True,  # Analyze screenshots in background
+    "background_analysis_interval": 10,  # Analyze every N captures (10 * 2s = 20s)
+    "game_state_history_size": 60,  # Number of screenshot analyses to keep (60 * 2s = 2 min)
+
+    # Display settings
+    "show_game_status": True,  # Show game tracking status in UI
 }
 
 
@@ -30,10 +49,23 @@ def get_config_path() -> Path:
     else:
         base = Path.home() / ".config"
 
-    config_dir = base / "displaycap-think"
+    config_dir = base / "lol-assistant"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     return config_dir / "config.json"
+
+
+def get_cache_path() -> Path:
+    """Get the path to the cache directory."""
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home()))
+    else:
+        base = Path.home() / ".config"
+
+    cache_dir = base / "lol-assistant" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    return cache_dir
 
 
 def load_config() -> dict:

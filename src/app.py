@@ -1,23 +1,37 @@
 """
-Main application module for DisplayCap Think.
+Main application module for LoL Assistant.
+
+An AI-powered League of Legends assistant that:
+- Automatically captures game screenshots every 2 seconds
+- Tracks game state from the captured images
+- Provides contextual advice when the user presses a hotkey
 """
 
 import sys
+import time
 import threading
 import tkinter as tk
 from typing import Optional
 import concurrent.futures
+from PIL import Image
 
-from .screenshot import capture_sequence, screenshots_to_base64
-from .api_client import create_client, analyze_screenshots
-from .display import ResponseWindow, StatusIndicator
+from .screenshot import (
+    capture_lol_sequence,
+    screenshots_to_base64,
+    image_to_base64,
+    AutoCaptureManager
+)
+from .api_client import create_client, analyze_screenshots, analyze_for_state_tracking
+from .display import ResponseWindow, GameStatusOverlay, COLORS
 from .hotkey import HotkeyManager
 from .config import load_config, get_api_key
 from .speech import SpeechCapture, ContinuousListener
+from .game_state import GameStateTracker, ScreenshotAnalysis, GameStateManager
+from .lol_api import LoLDataManager
 
 
-class DisplayCapApp:
-    """Main application class for DisplayCap Think."""
+class LoLAssistantApp:
+    """Main application class for LoL Assistant."""
 
     def __init__(self):
         self.config = load_config()
@@ -25,6 +39,7 @@ class DisplayCapApp:
         self.client = None
         self.hotkey_manager = HotkeyManager()
         self.response_window: Optional[ResponseWindow] = None
+        self.status_overlay: Optional[GameStatusOverlay] = None
         self.is_processing = False
         self._root: Optional[tk.Tk] = None
 
@@ -33,6 +48,16 @@ class DisplayCapApp:
         self.speech_capture: Optional[SpeechCapture] = None
         self.continuous_listener: Optional[ContinuousListener] = None
         self.use_continuous_listening = self.config.get("continuous_listening", False)
+
+        # LoL-specific components
+        self.lol_data = LoLDataManager()
+        self.game_state = GameStateManager.get_instance().tracker
+        self.auto_capture: Optional[AutoCaptureManager] = None
+
+        # Background analysis tracking
+        self._capture_count = 0
+        self._background_analysis_interval = self.config.get("background_analysis_interval", 10)
+        self._last_lol_detected = False
 
     def initialize(self) -> bool:
         """
@@ -56,6 +81,10 @@ class DisplayCapApp:
             print(f"Error creating API client: {e}")
             return False
 
+        # Initialize LoL data (Data Dragon API)
+        print("\nInitializing LoL Assistant...")
+        self.lol_data.initialize()
+
         # Set up hotkey
         self.hotkey_manager.set_hotkey(self.config.get("hotkey", "ctrl+shift+space"))
 
@@ -74,10 +103,92 @@ class DisplayCapApp:
                 print(f"Warning: Speech capture unavailable: {e}")
                 self.speech_enabled = False
 
+        # Initialize auto-capture
+        if self.config.get("auto_capture_enabled", True):
+            interval = self.config.get("auto_capture_interval", 2.0)
+            self.auto_capture = AutoCaptureManager(
+                interval=interval,
+                callback=self._on_auto_capture,
+                auto_detect_lol=self.config.get("auto_detect_lol_window", True)
+            )
+
         return True
 
+    def _on_auto_capture(self, image: Image.Image, is_lol_window: bool):
+        """
+        Callback for automatic screenshot capture.
+
+        Stores the screenshot and optionally runs background analysis.
+        """
+        self._capture_count += 1
+        self._last_lol_detected = is_lol_window
+
+        # Convert to base64 for storage
+        quality = self.config.get("image_quality", 85)
+        img_base64 = image_to_base64(image, quality=quality)
+
+        # Create analysis record
+        analysis = ScreenshotAnalysis(
+            timestamp=time.time(),
+            image_base64=img_base64,
+            current_screen="game" if is_lol_window else "unknown"
+        )
+
+        # Add to game state tracker
+        self.game_state.add_screenshot_analysis(analysis)
+
+        # Run background analysis periodically
+        if (self.config.get("background_analysis_enabled", True) and
+            self._capture_count % self._background_analysis_interval == 0):
+            # Run analysis in background thread to not block capture
+            threading.Thread(
+                target=self._run_background_analysis,
+                args=(img_base64,),
+                daemon=True
+            ).start()
+
+        # Update UI on main thread
+        if self._root and self.status_overlay:
+            self._root.after(0, lambda: self._update_overlay())
+
+    def _run_background_analysis(self, img_base64: str):
+        """Run background analysis on a screenshot to extract game state."""
+        try:
+            state = analyze_for_state_tracking(self.client, img_base64)
+
+            # Update game state tracker with extracted info
+            if state.get("my_champion"):
+                self.game_state.my_champion = state["my_champion"]
+
+            for enemy in state.get("visible_enemies", []):
+                self.game_state.update_enemy_champion(enemy)
+
+            if state.get("game_phase") != "unknown":
+                self.game_state.current_phase = state["game_phase"]
+
+            self.game_state.is_in_shop = state.get("shop_open", False)
+
+            # Update the latest analysis with parsed info
+            recent = self.game_state.get_recent_analyses(1)
+            if recent:
+                recent[0].raw_analysis = state.get("notes", "")
+                recent[0].shop_open = state.get("shop_open", False)
+                recent[0].game_phase = state.get("game_phase")
+
+        except Exception as e:
+            print(f"Background analysis error: {e}")
+
+    def _update_overlay(self):
+        """Update the status overlay UI."""
+        if self.status_overlay and self.auto_capture:
+            stats = self.auto_capture.get_stats()
+            self.status_overlay.update(
+                capture_count=stats.get("total_captures", 0),
+                lol_detected=self._last_lol_detected
+            )
+
     def _capture_and_analyze(self):
-        """Capture screenshots and speech, then send to AI for analysis."""
+        """Capture screenshots and analyze with full game context for advice."""
         if self.is_processing:
             return
 
@@ -90,35 +201,31 @@ class DisplayCapApp:
                 speech_text = self.continuous_listener.get_recent_speech(clear=True)
 
             # Show status on main thread
-            status_msg = "Capturing..." if not self.speech_enabled else "Capturing... (listening)"
+            status_msg = "Analyzing game..." if not self.speech_enabled else "Analyzing... (listening)"
             self._root.after(0, lambda: self._show_status(status_msg))
 
-            # Capture screenshots and speech in parallel
-            count = self.config.get("screenshot_count", 3)
-            interval = self.config.get("screenshot_interval", 0.5)
+            # Get recent screenshots from game state tracker (already captured)
+            recent_images = self.game_state.get_recent_images_base64(count=3)
+
+            # If we don't have recent captures, capture now
+            if not recent_images:
+                count = self.config.get("screenshot_count", 3)
+                interval = self.config.get("screenshot_interval", 0.5)
+                screenshots, _ = capture_lol_sequence(count=count, interval=interval)
+                quality = self.config.get("image_quality", 85)
+                recent_images = screenshots_to_base64(screenshots, quality=quality)
+
+            # Capture speech in parallel if enabled and no continuous buffer
             speech_timeout = self.config.get("speech_timeout", 3.0)
             speech_phrase_limit = self.config.get("speech_phrase_limit", 5.0)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                # Start screenshot capture
-                screenshot_future = executor.submit(
-                    capture_sequence, count=count, interval=interval
-                )
-
-                # Start speech capture if enabled and no continuous buffer
-                speech_future = None
-                if self.speech_enabled and self.speech_capture and not speech_text:
+            if self.speech_enabled and self.speech_capture and not speech_text:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     speech_future = executor.submit(
                         self.speech_capture.capture_speech,
                         timeout=speech_timeout,
                         phrase_time_limit=speech_phrase_limit
                     )
-
-                # Get screenshot results
-                screenshots = screenshot_future.result()
-
-                # Get speech results if capturing
-                if speech_future:
                     captured_text, speech_error = speech_future.result()
                     if captured_text:
                         speech_text = captured_text
@@ -126,22 +233,30 @@ class DisplayCapApp:
                         print(f"Speech warning: {speech_error}")
 
             # Update status
-            self._root.after(0, lambda: self._update_status("Analyzing..."))
+            self._root.after(0, lambda: self._update_status("Getting advice..."))
 
-            # Convert to base64
-            quality = self.config.get("image_quality", 85)
-            images_base64 = screenshots_to_base64(screenshots, quality=quality)
+            # Build game context from tracker
+            game_context = self.game_state.get_context_summary()
 
-            # Send to API with speech context
+            # Add LoL API data context
+            if self.lol_data.initialized:
+                game_context += f"\n\n{self.lol_data.get_ai_context_string()}"
+
+            # If shop is open, add item recommendation context
+            if self.game_state.is_in_shop:
+                game_context += f"\n\n{self.game_state.get_item_recommendation_context()}"
+
+            # Send to API for analysis
             response = analyze_screenshots(
                 self.client,
-                images_base64,
-                user_context=speech_text
+                recent_images,
+                user_context=speech_text,
+                game_context=game_context
             )
 
             # Show response (include speech indicator if we captured speech)
             if speech_text:
-                response = f'[Heard: "{speech_text}"]\n\n{response}'
+                response = f'[Question: "{speech_text}"]\n\n{response}'
 
             self._root.after(0, lambda: self._show_response(response))
 
@@ -156,6 +271,7 @@ class DisplayCapApp:
         """Show status indicator."""
         if self.response_window:
             self.response_window.show(message)
+            self.response_window.update_status("Processing...", COLORS["warning"])
 
     def _update_status(self, message: str):
         """Update status message."""
@@ -166,6 +282,10 @@ class DisplayCapApp:
         """Show the AI response in the window."""
         if self.response_window:
             self.response_window.update_message(response)
+            self.response_window.update_status(
+                "Tracking Game" if self._last_lol_detected else "Ready",
+                COLORS["success"] if self._last_lol_detected else COLORS["blue_accent"]
+            )
 
     def _on_hotkey(self):
         """Handle hotkey press."""
@@ -182,14 +302,29 @@ class DisplayCapApp:
         # Create response window
         self.response_window = ResponseWindow()
 
+        # Create status overlay if enabled
+        if self.config.get("show_game_status", True):
+            self.status_overlay = GameStatusOverlay()
+            # Note: overlay.show() needs to be called after response_window creates its root
+            self.response_window._create_window()
+            if self.response_window.root:
+                self.status_overlay.show(self.response_window.root)
+
+        # Start auto-capture
+        if self.auto_capture:
+            self.auto_capture.start()
+            self.game_state.start_new_game()  # Start fresh game state
+
         # Start hotkey listener
         self.hotkey_manager.start(self._on_hotkey)
 
         hotkey = self.hotkey_manager.get_hotkey()
-        print(f"DisplayCap Think is running!")
-        print(f"Press {hotkey.upper()} to capture and analyze your screen")
+        print(f"\nLoL Assistant is running!")
+        print(f"Press {hotkey.upper()} to get game advice")
         if self.speech_enabled:
-            print("Speak your question after pressing the hotkey for better context")
+            print("Speak your question after pressing the hotkey for specific advice")
+        if self.auto_capture:
+            print(f"Auto-capturing every {self.auto_capture.interval}s")
         print("Press Ctrl+C to exit")
 
         # Run the tkinter main loop
@@ -204,11 +339,18 @@ class DisplayCapApp:
         """Clean up and shut down the application."""
         print("\nShutting down...")
 
+        # Stop auto-capture
+        if self.auto_capture:
+            self.auto_capture.stop()
+
         self.hotkey_manager.stop()
 
         # Stop continuous listener if running
         if self.continuous_listener:
             self.continuous_listener.stop()
+
+        if self.status_overlay:
+            self.status_overlay.destroy()
 
         if self.response_window:
             self.response_window.destroy()
@@ -226,7 +368,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="DisplayCap Think - AI Screenshot Assistant"
+        description="LoL Assistant - AI-powered League of Legends Coach"
     )
     parser.add_argument(
         "--set-key",
@@ -254,6 +396,22 @@ def main():
         metavar="SECONDS",
         help="Max seconds to wait for speech (default: 3.0)"
     )
+    parser.add_argument(
+        "--no-auto-capture",
+        action="store_true",
+        help="Disable automatic screenshot capture"
+    )
+    parser.add_argument(
+        "--capture-interval",
+        type=float,
+        metavar="SECONDS",
+        help="Interval between auto-captures (default: 2.0)"
+    )
+    parser.add_argument(
+        "--no-overlay",
+        action="store_true",
+        help="Disable the status overlay"
+    )
 
     args = parser.parse_args()
 
@@ -274,7 +432,7 @@ def main():
         return
 
     # Run the application
-    app = DisplayCapApp()
+    app = LoLAssistantApp()
 
     # Apply command line overrides
     if args.no_speech:
@@ -283,6 +441,12 @@ def main():
         app.use_continuous_listening = True
     if args.speech_timeout:
         app.config["speech_timeout"] = args.speech_timeout
+    if args.no_auto_capture:
+        app.config["auto_capture_enabled"] = False
+    if args.capture_interval:
+        app.config["auto_capture_interval"] = args.capture_interval
+    if args.no_overlay:
+        app.config["show_game_status"] = False
 
     if not app.initialize():
         sys.exit(1)
