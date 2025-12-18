@@ -9,8 +9,82 @@ from typing import List, Optional
 import anthropic
 
 
-# Claude 3.5 Haiku model ID - fast responses for real-time assistance
-MODEL_ID = "claude-3-5-haiku-20241022"
+# Will be set dynamically by querying available models
+_MODEL_ID: Optional[str] = None
+
+
+def get_model_id(client: anthropic.Anthropic) -> str:
+    """
+    Get the best available Haiku model by querying the Anthropic API.
+
+    Queries the models endpoint and selects the latest Haiku model available.
+    Falls back to a known model ID if the query fails.
+
+    Args:
+        client: Anthropic API client
+
+    Returns:
+        Model ID string for the best available Haiku model
+    """
+    global _MODEL_ID
+
+    # Return cached model ID if already determined
+    if _MODEL_ID is not None:
+        return _MODEL_ID
+
+    # Fallback model IDs in order of preference
+    fallback_models = [
+        "claude-sonnet-4-20250514",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+        "claude-3-haiku-20240307",
+    ]
+
+    try:
+        # Query available models from the API
+        models_response = client.models.list(limit=100)
+        available_models = [model.id for model in models_response.data]
+
+        print(f"Available models: {len(available_models)} found")
+
+        # Look for Haiku models (prefer newer versions)
+        haiku_models = [m for m in available_models if "haiku" in m.lower()]
+
+        if haiku_models:
+            # Sort to get the latest version (higher dates come later alphabetically)
+            haiku_models.sort(reverse=True)
+            _MODEL_ID = haiku_models[0]
+            print(f"Selected Haiku model: {_MODEL_ID}")
+            return _MODEL_ID
+
+        # If no Haiku found, try Sonnet as fallback (still fast enough)
+        sonnet_models = [m for m in available_models if "sonnet" in m.lower()]
+        if sonnet_models:
+            sonnet_models.sort(reverse=True)
+            _MODEL_ID = sonnet_models[0]
+            print(f"No Haiku available, using Sonnet: {_MODEL_ID}")
+            return _MODEL_ID
+
+        # Use first available model from fallbacks that exists
+        for fallback in fallback_models:
+            if fallback in available_models:
+                _MODEL_ID = fallback
+                print(f"Using fallback model: {_MODEL_ID}")
+                return _MODEL_ID
+
+        # Last resort: use the first available model
+        if available_models:
+            _MODEL_ID = available_models[0]
+            print(f"Using first available model: {_MODEL_ID}")
+            return _MODEL_ID
+
+    except Exception as e:
+        print(f"Warning: Could not query models API: {e}")
+
+    # Ultimate fallback if API query fails entirely
+    _MODEL_ID = fallback_models[0]
+    print(f"Using hardcoded fallback model: {_MODEL_ID}")
+    return _MODEL_ID
 
 # System prompt focused on League of Legends assistance
 SYSTEM_PROMPT = """You are an expert League of Legends coach and assistant. You analyze screenshots of ongoing LoL games and provide strategic advice.
@@ -69,8 +143,11 @@ Be concise. This is for tracking game state, not giving advice."""
 
 
 def create_client(api_key: str) -> anthropic.Anthropic:
-    """Create an Anthropic API client."""
-    return anthropic.Anthropic(api_key=api_key)
+    """Create an Anthropic API client and detect available models."""
+    client = anthropic.Anthropic(api_key=api_key)
+    # Pre-fetch the model ID during initialization
+    get_model_id(client)
+    return client
 
 
 def analyze_screenshots(
@@ -127,7 +204,7 @@ def analyze_screenshots(
 
     # Make the API call
     message = client.messages.create(
-        model=MODEL_ID,
+        model=get_model_id(client),
         max_tokens=400,  # Slightly longer for detailed item recommendations
         system=SYSTEM_PROMPT,
         messages=[
@@ -180,7 +257,7 @@ def analyze_for_state_tracking(
     ]
 
     message = client.messages.create(
-        model=MODEL_ID,
+        model=get_model_id(client),
         max_tokens=200,  # Short response for state extraction
         system=BACKGROUND_ANALYSIS_PROMPT,
         messages=[
@@ -313,7 +390,7 @@ def get_item_recommendation(
     })
 
     message = client.messages.create(
-        model=MODEL_ID,
+        model=get_model_id(client),
         max_tokens=300,
         system=SYSTEM_PROMPT,
         messages=[
