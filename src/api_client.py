@@ -9,8 +9,8 @@ from typing import List, Optional
 import anthropic
 
 
-# Claude 4.5 Haiku model ID - fast responses for real-time assistance
-MODEL_ID = "claude-haiku-4-5-20241022"
+# Claude 3.5 Haiku model ID - fast responses for real-time assistance
+MODEL_ID = "claude-3-5-haiku-20241022"
 
 # System prompt focused on League of Legends assistance
 SYSTEM_PROMPT = """You are an expert League of Legends coach and assistant. You analyze screenshots of ongoing LoL games and provide strategic advice.
