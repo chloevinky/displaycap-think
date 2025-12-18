@@ -318,6 +318,54 @@ class LCUClient:
         self.auth_token: Optional[str] = None
         self.connected = False
 
+    def wait_for_client(
+        self,
+        timeout: float = 300.0,
+        poll_interval: float = 2.0,
+        verbose: bool = True
+    ) -> bool:
+        """
+        Wait for the League client to become available.
+
+        Args:
+            timeout: Maximum time to wait in seconds (default: 5 minutes)
+            poll_interval: Time between connection attempts in seconds (default: 2s)
+            verbose: Whether to print status messages
+
+        Returns:
+            True if connected successfully, False if timed out
+        """
+        if self.connected:
+            return True
+
+        start_time = time.time()
+        attempt = 0
+
+        if verbose:
+            print(f"Waiting for League client (timeout: {int(timeout)}s)...")
+
+        while time.time() - start_time < timeout:
+            attempt += 1
+
+            if self.connect():
+                if verbose:
+                    elapsed = time.time() - start_time
+                    print(f"Connected to League client after {elapsed:.1f}s")
+                return True
+
+            # Show periodic status updates
+            if verbose and attempt % 5 == 0:
+                elapsed = time.time() - start_time
+                remaining = timeout - elapsed
+                print(f"  Still waiting... ({int(remaining)}s remaining)")
+
+            time.sleep(poll_interval)
+
+        if verbose:
+            print(f"Timed out waiting for League client after {timeout}s")
+
+        return False
+
     def _find_lockfile(self) -> Optional[Path]:
         """Find the League client lockfile."""
         # Common installation paths
@@ -420,17 +468,39 @@ class LoLDataManager:
         self.lcu = LCUClient()
         self.initialized = False
 
-    def initialize(self) -> bool:
-        """Initialize all data sources."""
+    def initialize(
+        self,
+        wait_for_client: bool = True,
+        wait_timeout: float = 300.0,
+        wait_poll_interval: float = 2.0
+    ) -> bool:
+        """
+        Initialize all data sources.
+
+        Args:
+            wait_for_client: Whether to wait for the League client to become available
+            wait_timeout: Maximum time to wait for client in seconds (default: 5 minutes)
+            wait_poll_interval: Time between connection attempts in seconds (default: 2s)
+
+        Returns:
+            True if Data Dragon initialization succeeded (LCU is optional)
+        """
         # Always try to get Data Dragon data
         dd_success = self.ddragon.initialize()
 
-        # Try to connect to LCU (optional - only works when client is open)
-        lcu_success = self.lcu.connect()
-        if lcu_success:
-            print("Connected to League client")
+        # Connect to LCU - either wait or try once
+        if wait_for_client:
+            lcu_success = self.lcu.wait_for_client(
+                timeout=wait_timeout,
+                poll_interval=wait_poll_interval,
+                verbose=True
+            )
         else:
-            print("League client not detected (live game features disabled)")
+            lcu_success = self.lcu.connect()
+            if lcu_success:
+                print("Connected to League client")
+            else:
+                print("League client not detected (live game features disabled)")
 
         self.initialized = dd_success
         return dd_success

@@ -54,6 +54,11 @@ class LoLAssistantApp:
         self.game_state = GameStateManager.get_instance().tracker
         self.auto_capture: Optional[AutoCaptureManager] = None
 
+        # Client wait settings (wait for League client API to be available)
+        self.wait_for_client = self.config.get("wait_for_client", True)
+        self.wait_timeout = self.config.get("wait_timeout", 300.0)
+        self.wait_poll_interval = self.config.get("wait_poll_interval", 2.0)
+
         # Background analysis tracking
         self._capture_count = 0
         self._background_analysis_interval = self.config.get("background_analysis_interval", 10)
@@ -81,9 +86,13 @@ class LoLAssistantApp:
             print(f"Error creating API client: {e}")
             return False
 
-        # Initialize LoL data (Data Dragon API)
+        # Initialize LoL data (Data Dragon API + LCU client)
         print("\nInitializing LoL Assistant...")
-        self.lol_data.initialize()
+        self.lol_data.initialize(
+            wait_for_client=self.wait_for_client,
+            wait_timeout=self.wait_timeout,
+            wait_poll_interval=self.wait_poll_interval
+        )
 
         # Set up hotkey
         self.hotkey_manager.set_hotkey(self.config.get("hotkey", "ctrl+shift+space"))
@@ -412,6 +421,17 @@ def main():
         action="store_true",
         help="Disable the status overlay"
     )
+    parser.add_argument(
+        "--no-wait-for-client",
+        action="store_true",
+        help="Don't wait for League client; start immediately"
+    )
+    parser.add_argument(
+        "--wait-timeout",
+        type=float,
+        metavar="SECONDS",
+        help="Max seconds to wait for League client (default: 300)"
+    )
 
     args = parser.parse_args()
 
@@ -447,6 +467,10 @@ def main():
         app.config["auto_capture_interval"] = args.capture_interval
     if args.no_overlay:
         app.config["show_game_status"] = False
+    if args.no_wait_for_client:
+        app.wait_for_client = False
+    if args.wait_timeout:
+        app.wait_timeout = args.wait_timeout
 
     if not app.initialize():
         sys.exit(1)
